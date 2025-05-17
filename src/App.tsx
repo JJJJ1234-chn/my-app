@@ -1,246 +1,245 @@
-// src/App.tsx
 import React, { useState } from 'react';
+import { addMinutes, format } from 'date-fns';
+import {
+  LineChart,
+  Line,
+  XAxis,
+  YAxis,
+  Tooltip,
+  CartesianGrid,
+  ResponsiveContainer,
+} from 'recharts';
 import './App.css';
 
-import {
-  Chart as ChartJS,
-  CategoryScale,
-  LinearScale,
-  BarElement,
-  PointElement,
-  LineElement,
-  Title,
-  Tooltip,
-  Legend,
-} from 'chart.js';
-import { Line, Bar } from 'react-chartjs-2';
+// 地球和星座参数
+const EARTH_RADIUS = 6371;                // 地球半径（km）
+const MU = 398600.4418;                   // 地心引力常数 μ (km^3/s^2)
+const RELAY_ALTITUDE = 781;               // 中继星座高度（km）
+const RELAY_INCLINATION = 86 * Math.PI/180; // 中继倾角 (rad)
+const RELAY_COUNT = 6;                    // 中继星数量
+const CONE_ANGLE = 20 * Math.PI/180;      // 通信锥半顶角 20° (rad)
 
-import { propagateCircular, propagateTLE, EcfPos } from './orbit';
-import { fetchIridiumTLE } from './fetchIridium';
-import { OrbitScene } from './OrbitScene';
-
-ChartJS.register(
-  CategoryScale,
-  LinearScale,
-  BarElement,
-  PointElement,
-  LineElement,
-  Title,
-  Tooltip,
-  Legend
-);
+// 将用户输入的 "HH:MM" LST 转成 0–2π 的相位偏移
+function parsePhaseFromLST(lst: string): number {
+  const [hh, mm] = lst.split(':').map(Number);
+  const seconds = hh * 3600 + mm * 60;
+  return (seconds / 86400) * 2 * Math.PI;
+}
 
 function App() {
+  // 参数状态
   const [orbitType, setOrbitType] = useState<'sun' | 'non' | null>(null);
   const [altitude, setAltitude] = useState<number>(600);
   const [lst, setLst] = useState<string>('11:00');
-  const [incl, setIncl] = useState<number>(45);
-  const [beamAngle, setBeamAngle] = useState<number>(20);
+  const [inclination, setInclination] = useState<number>(45);
 
-  const [handshakes, setHandshakes] = useState<number>(0);
-  const [outages, setOutages] = useState<number[]>([]);
-  const [perMinute, setPerMinute] = useState<number[]>([]);
-  const [durationDist, setDurationDist] = useState<Record<number, number>>({});
-  const [times, setTimes] = useState<string[]>([]);
+  // 结果状态
+  const [handshakeCount, setHandshakeCount] = useState<number>(0);
+  const [outageCount, setOutageCount] = useState<number>(0);
+  const [totalOutageSec, setTotalOutageSec] = useState<number>(0);
+  const [avgOutageSec, setAvgOutageSec] = useState<number>(0);
+  const [chartData, setChartData] = useState<
+    { time: string; handshakes: number }[]
+  >([]);
 
-  const [beaconMain, setBeaconMain] = useState<EcfPos[]>([]);
-  const [beaconOpp, setBeaconOpp] = useState<EcfPos[]>([]);
-  const [relayPaths, setRelayPaths] = useState<EcfPos[][]>([]);
+  // 模拟核心函数
+  function runSimulation() {
+    // 1. 计算信标轨道参数
+    const r1 = EARTH_RADIUS + altitude;
+    const inc1 = (orbitType === 'sun' ? 97.5 : inclination) * Math.PI/180;
+    const T1 = 2 * Math.PI * Math.sqrt(r1**3 / MU);
+    const w1 = 2 * Math.PI / T1;
 
-  const coneRad = (beamAngle * Math.PI) / 180;
+    // 2. 计算中继星座轨道参数
+    const r2 = EARTH_RADIUS + RELAY_ALTITUDE;
+    const T2 = 2 * Math.PI * Math.sqrt(r2**3 / MU);
+    const w2 = 2 * Math.PI / T2;
 
-  const handleRun = async () => {
-    // 1. 主/副 Beacon 圆轨道
-    const mainPath = propagateCircular(
-      altitude,
-      orbitType === 'sun' ? 97.5 : incl,
-      lst,
-      0
-    );
-    const oppPath = propagateCircular(
-      altitude,
-      orbitType === 'sun' ? 97.5 : incl,
-      lst,
-      Math.PI
-    );
+    // 3. 解析 LST 相位偏移
+    const phaseOffset = parsePhaseFromLST(lst);
+    console.log('phaseOffset (rad):', phaseOffset.toFixed(3));
 
-    // 2. 动态拉取并推进 66 颗 Iridium NEXT
-    const tleList: [string, string][] = await fetchIridiumTLE();
-    const relays: EcfPos[][] = tleList.map(
-      ([l1, l2]: [string, string]) => propagateTLE(l1, l2)
-    );
+    // 4. 初始化统计变量
+    let handshakes = 0;
+    let inCommPrev = false;
+    let currOutage = 0;
+    const outageEvents: number[] = [];
+    const data: { time: string; handshakes: number }[] = [];
 
-    // 3. 通信判定 & 统计
-    let total = 0,
-      prev = false,
-      currOut = 0;
-    const outArr: number[] = [],
-      mins: number[] = [],
-      tLabels: string[] = [];
-
+    // 5. 每分钟采样 24h
+    let t = new Date();
+    t.setHours(0,0,0,0);
     for (let i = 0; i < 1440; i++) {
-      const bm = mainPath[i],
-        bo = oppPath[i];
-      const inComm = relays.some((path: EcfPos[]) => {
-        const r = path[i];
-        const check = (p: EcfPos) => {
-          const dot = p.x * r.x + p.y * r.y + p.z * r.z;
-          const m1 = Math.hypot(p.x, p.y, p.z);
-          const m2 = Math.hypot(r.x, r.y, r.z);
-          return dot / (m1 * m2) >= Math.cos(coneRad);
-        };
-        return check(bm) || check(bo);
-      });
+      const seconds = i * 60;
 
-      let delta = 0;
-      if (inComm && !prev) {
-        total++;
-        delta = 1;
-        if (currOut > 0) {
-          outArr.push(currOut);
-          currOut = 0;
+      // 信标位置（加上 phaseOffset）
+      const θ1 = w1 * seconds + phaseOffset;
+      const pos1 = {
+        x: r1 * Math.cos(θ1),
+        y: r1 * Math.sin(θ1) * Math.cos(inc1),
+        z: r1 * Math.sin(θ1) * Math.sin(inc1),
+      };
+
+      // 与中继星座连通判定
+      let inComm = false;
+      for (let j = 0; j < RELAY_COUNT; j++) {
+        const raan = (2 * Math.PI / RELAY_COUNT) * j;
+        const θ2 = w2 * seconds + raan;
+        const pos2 = {
+          x: r2 * Math.cos(θ2),
+          y: r2 * Math.sin(θ2) * Math.cos(RELAY_INCLINATION),
+          z: r2 * Math.sin(θ2) * Math.sin(RELAY_INCLINATION),
+        };
+        const dot = pos1.x*pos2.x + pos1.y*pos2.y + pos1.z*pos2.z;
+        const cosAng = dot / (r1 * r2);
+        if (cosAng > Math.cos(CONE_ANGLE)) {
+          inComm = true;
+          break;
         }
       }
-      if (!inComm) currOut += 60;
-      prev = inComm;
 
-      mins.push(delta);
-      tLabels.push(
-        `${String(Math.floor(i / 60)).padStart(2, '0')}:${String(i % 60).padStart(2, '0')}`
-      );
+      // 握手 & 断连统计
+      if (inComm && !inCommPrev) {
+        handshakes++;
+        if (currOutage > 0) {
+          outageEvents.push(currOutage);
+          currOutage = 0;
+        }
+      }
+      if (!inComm) {
+        currOutage += 60;
+      }
+      inCommPrev = inComm;
+
+      // 记录图表
+      data.push({ time: format(t, 'HH:mm'), handshakes });
+      t = addMinutes(t, 1);
     }
-    if (!prev && currOut > 0) outArr.push(currOut);
 
-    const dist: Record<number, number> = {};
-    outArr.forEach((d: number) => (dist[d] = (dist[d] || 0) + 1));
+    // 结束时检查最后一次断连
+    if (!inCommPrev && currOutage > 0) {
+      outageEvents.push(currOutage);
+    }
 
-    // 更新所有 State
-    setBeaconMain(mainPath);
-    setBeaconOpp(oppPath);
-    setRelayPaths(relays);
-    setHandshakes(total);
-    setOutages(outArr);
-    setPerMinute(mins);
-    setTimes(tLabels);
-    setDurationDist(dist);
-  };
+    // 汇总断连时长
+    const totalOut = outageEvents.reduce((a, b) => a + b, 0);
+    const avgOut = outageEvents.length ? totalOut / outageEvents.length : 0;
+
+    // 更新状态
+    setHandshakeCount(handshakes);
+    setOutageCount(outageEvents.length);
+    setTotalOutageSec(totalOut);
+    setAvgOutageSec(avgOut);
+    setChartData(data);
+  }
 
   return (
     <div className="App" style={{ padding: 20 }}>
       <h1>卫星通信模拟器</h1>
 
+      {/* 轨道类型选择 */}
       <div style={{ marginBottom: 16 }}>
-        <button onClick={() => setOrbitType('sun')}>太阳同步</button>
-        <button style={{ marginLeft: 8 }} onClick={() => setOrbitType('non')}>
+        <button
+          onClick={() => {
+            setOrbitType('sun');
+            setChartData([]);
+          }}
+        >
+          太阳同步
+        </button>
+        <button
+          onClick={() => {
+            setOrbitType('non');
+            setChartData([]);
+          }}
+          style={{ marginLeft: 8 }}
+        >
           非极地
         </button>
-        {orbitType && (
-          <>
-            <label style={{ marginLeft: 16 }}>
-              高度 (km):
-              <input
-                type="number"
-                value={altitude}
-                onChange={(e) => setAltitude(+e.target.value)}
-                style={{ marginLeft: 4, width: 80 }}
-              />
-            </label>
-            {orbitType === 'sun' ? (
-              <label style={{ marginLeft: 16 }}>
-                LST:
-                <input
-                  type="time"
-                  value={lst}
-                  onChange={(e) => setLst(e.target.value)}
-                  style={{ marginLeft: 4 }}
-                />
-              </label>
-            ) : (
-              <label style={{ marginLeft: 16 }}>
-                倾角 (°):
-                <input
-                  type="number"
-                  min={30}
-                  max={98}
-                  value={incl}
-                  onChange={(e) => setIncl(+e.target.value)}
-                  style={{ marginLeft: 4, width: 60 }}
-                />
-              </label>
-            )}
-            <label style={{ marginLeft: 16 }}>
-              半顶角 (°):
-              <input
-                type="number"
-                min={1}
-                max={90}
-                value={beamAngle}
-                onChange={(e) => setBeamAngle(+e.target.value)}
-                style={{ marginLeft: 4, width: 60 }}
-              />
-            </label>
-            <button style={{ marginLeft: 16 }} onClick={handleRun}>
-              开始模拟
-            </button>
-          </>
-        )}
       </div>
 
-      {perMinute.length > 0 && (
-        <div style={{ marginBottom: 24 }}>
-          <div>握手总数：{handshakes}</div>
-          <div>断连次数：{outages.length}</div>
-          <div>总断连时长：{outages.reduce((a, b) => a + b, 0)} s</div>
-          <div>
-            平均断连时长：
-            {(outages.reduce((a, b) => a + b, 0) / outages.length).toFixed(1)} s
-          </div>
+      {/* 参数输入 */}
+      {orbitType === 'sun' && (
+        <div style={{ marginBottom: 16 }}>
+          <label>
+            高度(km):
+            <input
+              type="number"
+              value={altitude}
+              onChange={e => setAltitude(Number(e.target.value))}
+              style={{ marginLeft: 4, width: 80 }}
+            />
+          </label>
+          <label style={{ marginLeft: 16 }}>
+            LST:
+            <input
+              type="time"
+              value={lst}
+              onChange={e => setLst(e.target.value)}
+              style={{ marginLeft: 4 }}
+            />
+          </label>
+        </div>
+      )}
+      {orbitType === 'non' && (
+        <div style={{ marginBottom: 16 }}>
+          <label>
+            倾角(°):
+            <input
+              type="number"
+              min={30}
+              max={98}
+              value={inclination}
+              onChange={e => setInclination(Number(e.target.value))}
+              style={{ marginLeft: 4, width: 80 }}
+            />
+          </label>
+          <label style={{ marginLeft: 16 }}>
+            高度(km):
+            <input
+              type="number"
+              value={altitude}
+              onChange={e => setAltitude(Number(e.target.value))}
+              style={{ marginLeft: 4, width: 80 }}
+            />
+          </label>
         </div>
       )}
 
-      {perMinute.length > 0 && (
-        <Line
-          key={times.join(',')}
-          redraw
-          data={{
-            labels: times,
-            datasets: [
-              {
-                label: '每分钟握手事件',
-                data: perMinute,
-                fill: false,
-                borderColor: 'purple',
-                pointRadius: 0,
-              },
-            ],
-          }}
-          options={{ animation: false, scales: { x: { display: false } } }}
-        />
+      {/* 开始模拟 */}
+      {orbitType && (
+        <button onClick={runSimulation} style={{ marginBottom: 24 }}>
+          开始模拟
+        </button>
       )}
 
-      {Object.keys(durationDist).length > 0 && (
-        <Bar
-          data={{
-            labels: Object.keys(durationDist),
-            datasets: [
-              {
-                label: '盲区持续时长分布 (s)',
-                data: Object.values(durationDist),
-                backgroundColor: 'rgba(100,100,255,0.5)',
-              },
-            ],
-          }}
-          options={{ plugins: { legend: { display: false } } }}
-        />
+      {/* 指标显示 */}
+      {chartData.length > 0 && (
+        <div style={{ marginBottom: 24 }}>
+          <div>总握手次数：{handshakeCount}</div>
+          <div>断连次数：{outageCount}</div>
+          <div>断连总时长：{totalOutageSec} s</div>
+          <div>平均断连时长：{avgOutageSec.toFixed(1)} s</div>
+        </div>
       )}
 
-      {beaconMain.length > 0 && (
-        <div style={{ width: '100%', height: 500, marginTop: 24 }}>
-          <OrbitScene
-            beaconMain={beaconMain}
-            beaconOpp={beaconOpp}
-            relayPaths={relayPaths}
-          />
+      {/* 累计握手折线图 */}
+      {chartData.length > 0 && (
+        <div style={{ width: '100%', height: 300 }}>
+          <ResponsiveContainer>
+            <LineChart data={chartData}>
+              <CartesianGrid strokeDasharray="3 3" />
+              <XAxis dataKey="time" interval={119} />
+              <YAxis allowDecimals={false} />
+              <Tooltip />
+              <Line
+                type="monotone"
+                dataKey="handshakes"
+                stroke="#8884d8"
+                dot={false}
+              />
+            </LineChart>
+          </ResponsiveContainer>
         </div>
       )}
     </div>

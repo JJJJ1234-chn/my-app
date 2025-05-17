@@ -1,3 +1,4 @@
+// OrbitChartWithHandshake.tsx
 import React, { useEffect, useRef } from 'react';
 import * as THREE from 'three';
 import {
@@ -16,15 +17,27 @@ interface TLEEntry {
   line2: string;
 }
 
-interface OrbitChartProps {
-  tleData: TLEEntry[];
+interface HandshakeEvent {
+  lat: number;
+  lon: number;
+  alt: number; // in meters
+  time: Date;
+  beacon: string;
+  relay: string;
 }
 
-const OrbitChart: React.FC<OrbitChartProps> = ({ tleData }) => {
+interface OrbitChartProps {
+  tleData: TLEEntry[];
+  handshakePoints: HandshakeEvent[];
+}
+
+const OrbitChartWithHandshake: React.FC<OrbitChartProps> = ({ tleData, handshakePoints }) => {
   const containerRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     if (!containerRef.current) return;
+    console.log('收到的 tleData 数量:', tleData.length);
+    console.log('收到的 handshakePoints 数量:', handshakePoints.length);
 
     const scene = new THREE.Scene();
     const camera = new THREE.PerspectiveCamera(
@@ -33,7 +46,7 @@ const OrbitChart: React.FC<OrbitChartProps> = ({ tleData }) => {
       0.1,
       1000
     );
-    camera.position.z = 10;
+    camera.position.z = 5;
 
     const renderer = new THREE.WebGLRenderer({ antialias: true });
     renderer.setSize(containerRef.current.clientWidth, containerRef.current.clientHeight);
@@ -42,22 +55,30 @@ const OrbitChart: React.FC<OrbitChartProps> = ({ tleData }) => {
     const controls = new OrbitControls(camera, renderer.domElement);
     controls.enableDamping = true;
     controls.dampingFactor = 0.05;
+    controls.minDistance = 1;
+    controls.maxDistance = 50;
 
-    const earth = new THREE.Mesh(
-      new THREE.SphereGeometry(1, 32, 32),
-      new THREE.MeshBasicMaterial({ color: 0x0033aa, wireframe: true })
+    const earthGeometry = new THREE.SphereGeometry(1, 32, 32);
+    const earthMaterial = new THREE.MeshBasicMaterial({ color: 0x0033aa, wireframe: true });
+    const earthMesh = new THREE.Mesh(earthGeometry, earthMaterial);
+    scene.add(earthMesh);
+
+    const testBall = new THREE.Mesh(
+      new THREE.SphereGeometry(0.1, 16, 16),
+      new THREE.MeshBasicMaterial({ color: 0xff0000 })
     );
-    scene.add(earth);
+    scene.add(testBall);
 
     const baseTime = new Date();
 
-    tleData.forEach((tle) => {
+    tleData.forEach((tle, idx) => {
       const satrec = twoline2satrec(tle.line1, tle.line2);
-      const points: THREE.Vector3[] = [];
+      const positions: THREE.Vector3[] = [];
 
       for (let i = 0; i <= 90; i++) {
         const time = new Date(baseTime.getTime() + i * 60 * 1000);
         const posVel = propagate(satrec, time);
+
         if (!posVel || !posVel.position) continue;
 
         const gmst = gstime(time);
@@ -74,14 +95,34 @@ const OrbitChart: React.FC<OrbitChartProps> = ({ tleData }) => {
         const y = radius * Math.cos(phi);
         const z = radius * Math.sin(phi) * Math.sin(theta);
 
-        points.push(new THREE.Vector3(x, y, z));
+        positions.push(new THREE.Vector3(x, y, z));
       }
 
-      const orbit = new THREE.Line(
-        new THREE.BufferGeometry().setFromPoints(points),
-        new THREE.LineBasicMaterial({ color: 0xff0000 })
+      console.log(`卫星 ${tle.name} 有效轨道点数:`, positions.length);
+
+      if (positions.length > 0) {
+        const orbitGeometry = new THREE.BufferGeometry().setFromPoints(positions);
+        const orbitMaterial = new THREE.LineBasicMaterial({ color: 0xff0000 });
+        const orbitLine = new THREE.Line(orbitGeometry, orbitMaterial);
+        scene.add(orbitLine);
+      }
+    });
+
+    handshakePoints.forEach(({ lat, lon, alt }, i) => {
+      const radius = 1 + alt / 6371 / 1000;
+      const phi = (90 - lat) * (Math.PI / 180);
+      const theta = (lon + 180) * (Math.PI / 180);
+
+      const x = radius * Math.sin(phi) * Math.cos(theta);
+      const y = radius * Math.cos(phi);
+      const z = radius * Math.sin(phi) * Math.sin(theta);
+
+      const marker = new THREE.Mesh(
+        new THREE.SphereGeometry(0.03, 12, 12),
+        new THREE.MeshBasicMaterial({ color: 0x00ff00 })
       );
-      scene.add(orbit);
+      marker.position.set(x, y, z);
+      scene.add(marker);
     });
 
     const animate = () => {
@@ -97,9 +138,10 @@ const OrbitChart: React.FC<OrbitChartProps> = ({ tleData }) => {
         containerRef.current.removeChild(renderer.domElement);
       }
     };
-  }, [tleData]);
+  }, [tleData, handshakePoints]);
 
   return <div ref={containerRef} style={{ width: '100%', height: '600px' }} />;
 };
 
-export default OrbitChart;
+export default OrbitChartWithHandshake;
+
