@@ -135,7 +135,7 @@ function App() {
 
   return (
     <div className="App" style={{ padding: 20 }}>
-      <h1>卫星通信模拟器</h1>
+      <h1>Satellite communication simulator</h1>
 
       {/* 轨道类型选择 */}
       <div style={{ marginBottom: 16 }}>
@@ -145,7 +145,7 @@ function App() {
             setChartData([]);
           }}
         >
-          太阳同步
+          Sun-synchronous
         </button>
         <button
           onClick={() => {
@@ -154,7 +154,7 @@ function App() {
           }}
           style={{ marginLeft: 8 }}
         >
-          非极地
+          Non-polar
         </button>
       </div>
 
@@ -162,7 +162,7 @@ function App() {
       {orbitType === 'sun' && (
         <div style={{ marginBottom: 16 }}>
           <label>
-            高度(km):
+            altitude(km):
             <input
               type="number"
               value={altitude}
@@ -184,7 +184,7 @@ function App() {
       {orbitType === 'non' && (
         <div style={{ marginBottom: 16 }}>
           <label>
-            倾角(°):
+            angle(°):
             <input
               type="number"
               min={30}
@@ -195,7 +195,7 @@ function App() {
             />
           </label>
           <label style={{ marginLeft: 16 }}>
-            高度(km):
+            altitude(km):
             <input
               type="number"
               value={altitude}
@@ -209,17 +209,17 @@ function App() {
       {/* 开始模拟 */}
       {orbitType && (
         <button onClick={runSimulation} style={{ marginBottom: 24 }}>
-          开始模拟
+          start simulation
         </button>
       )}
 
       {/* 指标显示 */}
       {chartData.length > 0 && (
         <div style={{ marginBottom: 24 }}>
-          <div>总握手次数：{handshakeCount}</div>
-          <div>断连次数：{outageCount}</div>
-          <div>断连总时长：{totalOutageSec} s</div>
-          <div>平均断连时长：{avgOutageSec.toFixed(1)} s</div>
+          <div>Total number of handshakes：{handshakeCount}</div>
+          <div>Number of disconnections：{outageCount}</div>
+          <div>Total disconnection duration：{totalOutageSec} s</div>
+          <div>Average disconnection duration：{avgOutageSec.toFixed(1)} s</div>
         </div>
       )}
 
